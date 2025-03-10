@@ -646,6 +646,12 @@ static __always_inline kvm_mn_ret_t __kvm_handle_hva_range(struct kvm *kvm,
 			 */
 			gfn_range.arg = range->arg;
 			gfn_range.may_block = range->may_block;
+			/*
+			 * HVA-based notifications aren't relevant to private
+			 * mappings as they don't have a userspace mapping.
+			 */
+			gfn_range.only_private = false;
+			gfn_range.only_shared = true;
 
 			/*
 			 * {gfn(page) | page intersects with [hva_start, hva_end)} =
@@ -2452,6 +2458,16 @@ static __always_inline void kvm_handle_gfn_range(struct kvm *kvm,
 	gfn_range.arg = range->arg;
 	gfn_range.may_block = range->may_block;
 
+	/*
+	 * If/when KVM supports more attributes beyond private .vs shared, this
+	 * _could_ set only_{private,shared} appropriately if the entire target
+	 * range already has the desired private vs. shared state (it's unclear
+	 * if that is a net win).  For now, KVM reaches this point if and only
+	 * if the private flag is being toggled, i.e. all mappings are in play.
+	 */
+	gfn_range.only_private = false;
+	gfn_range.only_shared = false;
+
 	for (i = 0; i < kvm_arch_nr_memslot_as_ids(kvm); i++) {
 		slots = __kvm_memslots(kvm, i);
 
@@ -2508,6 +2524,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 	struct kvm_mmu_notifier_range pre_set_range = {
 		.start = start,
 		.end = end,
+		.arg.attributes = attributes,
 		.handler = kvm_pre_set_memory_attributes,
 		.on_lock = kvm_mmu_invalidate_begin,
 		.flush_on_ret = true,
@@ -4412,6 +4429,62 @@ static int kvm_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 }
 #endif
 
+__weak void kvm_arch_vcpu_pre_memory_mapping(struct kvm_vcpu *vcpu)
+{
+}
+
+__weak int kvm_arch_vcpu_memory_mapping(struct kvm_vcpu *vcpu,
+					struct kvm_memory_mapping *mapping)
+{
+	return -EOPNOTSUPP;
+}
+
+static int kvm_vcpu_memory_mapping(struct kvm_vcpu *vcpu,
+				   struct kvm_memory_mapping *mapping)
+{
+	bool added = false;
+	int idx, r = 0;
+
+	/* flags isn't used yet. */
+	if (mapping->flags)
+		return -EINVAL;
+
+	/* Sanity check */
+	if (!IS_ALIGNED(mapping->source, PAGE_SIZE) ||
+	    !mapping->nr_pages ||
+	    mapping->nr_pages & GENMASK_ULL(63, 63 - PAGE_SHIFT) ||
+	    mapping->base_gfn + mapping->nr_pages <= mapping->base_gfn)
+		return -EINVAL;
+
+	vcpu_load(vcpu);
+	idx = srcu_read_lock(&vcpu->kvm->srcu);
+	kvm_arch_vcpu_pre_memory_mapping(vcpu);
+
+	while (mapping->nr_pages) {
+		if (signal_pending(current)) {
+			r = -ERESTARTSYS;
+			break;
+		}
+
+		if (need_resched())
+			cond_resched();
+
+		r = kvm_arch_vcpu_memory_mapping(vcpu, mapping);
+		if (r)
+			break;
+
+		added = true;
+	}
+
+	srcu_read_unlock(&vcpu->kvm->srcu, idx);
+	vcpu_put(vcpu);
+
+	if (added && mapping->nr_pages > 0)
+		r = -EAGAIN;
+
+	return r;
+}
+
 static long kvm_vcpu_ioctl(struct file *filp,
 			   unsigned int ioctl, unsigned long arg)
 {
@@ -4672,6 +4745,17 @@ static long kvm_vcpu_compat_ioctl(struct file *filp,
 			r = kvm_vcpu_ioctl_set_sigmask(vcpu, &sigset);
 		} else
 			r = kvm_vcpu_ioctl_set_sigmask(vcpu, NULL);
+		break;
+	}
+	case KVM_MEMORY_MAPPING: {
+		struct kvm_memory_mapping mapping;
+
+		r = -EFAULT;
+		if (copy_from_user(&mapping, argp, sizeof(mapping)))
+			break;
+		r = kvm_vcpu_memory_mapping(vcpu, &mapping);
+		if (copy_to_user(argp, &mapping, sizeof(mapping)))
+			r = -EFAULT;
 		break;
 	}
 	default:
