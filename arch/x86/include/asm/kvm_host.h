@@ -1637,17 +1637,12 @@ struct kvm_x86_ops {
 	cpu_emergency_virt_cb *emergency_disable_virtualization_cpu;
 
 	void (*hardware_unsetup)(void);
-	int (*offline_cpu)(void);
 	bool (*has_emulated_msr)(struct kvm *kvm, u32 index);
 	void (*vcpu_after_set_cpuid)(struct kvm_vcpu *vcpu);
 
 	unsigned int vm_size;
-	int (*max_vcpus)(struct kvm *kvm);
-	int (*vm_enable_cap)(struct kvm *kvm, struct kvm_enable_cap *cap);
 	int (*vm_init)(struct kvm *kvm);
-	void (*flush_shadow_all_private)(struct kvm *kvm);
 	void (*vm_destroy)(struct kvm *kvm);
-	void (*vm_free)(struct kvm *kvm);
 
 	/* Create, but do not attach this VCPU */
 	int (*vcpu_precreate)(struct kvm *kvm);
@@ -1843,6 +1838,13 @@ struct kvm_x86_ops {
 	int (*gmem_prepare)(struct kvm *kvm, kvm_pfn_t pfn, gfn_t gfn, int max_order);
 	void (*gmem_invalidate)(kvm_pfn_t start, kvm_pfn_t end);
 	int (*private_max_mapping_level)(struct kvm *kvm, kvm_pfn_t pfn);
+#ifndef __GENKSYMS__
+	int (*max_vcpus)(struct kvm *kvm);
+	int (*vm_enable_cap)(struct kvm *kvm, struct kvm_enable_cap *cap);
+	void (*flush_shadow_all_private)(struct kvm *kvm);
+	void (*vm_free)(struct kvm *kvm);
+	int (*offline_cpu)(void);
+#endif
 };
 
 struct kvm_x86_nested_ops {
