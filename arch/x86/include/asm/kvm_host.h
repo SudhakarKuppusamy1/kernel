@@ -1838,13 +1838,6 @@ struct kvm_x86_ops {
 	int (*gmem_prepare)(struct kvm *kvm, kvm_pfn_t pfn, gfn_t gfn, int max_order);
 	void (*gmem_invalidate)(kvm_pfn_t start, kvm_pfn_t end);
 	int (*private_max_mapping_level)(struct kvm *kvm, kvm_pfn_t pfn);
-#ifndef __GENKSYMS__
-	int (*max_vcpus)(struct kvm *kvm);
-	int (*vm_enable_cap)(struct kvm *kvm, struct kvm_enable_cap *cap);
-	void (*flush_shadow_all_private)(struct kvm *kvm);
-	void (*vm_free)(struct kvm *kvm);
-	int (*offline_cpu)(void);
-#endif
 };
 
 struct kvm_x86_nested_ops {

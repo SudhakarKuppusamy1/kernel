@@ -4675,7 +4675,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_VM_DISABLE_NX_HUGE_PAGES:
 	case KVM_CAP_IRQFD_RESAMPLE:
 	case KVM_CAP_MEMORY_FAULT_INFO:
-	case KVM_CAP_MEMORY_MAPPING:
 		r = 1;
 		break;
 	case KVM_CAP_PRE_FAULT_MEMORY:
@@ -4736,8 +4735,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 	case KVM_CAP_MAX_VCPUS:
 		r = KVM_MAX_VCPUS;
-		if (kvm_x86_ops.max_vcpus)
-			r = static_call(kvm_x86_max_vcpus)(kvm);
 		break;
 	case KVM_CAP_MAX_VCPU_ID:
 		r = KVM_MAX_VCPU_IDS;
@@ -4800,7 +4797,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 	case KVM_CAP_VM_TYPES:
 		r = kvm_caps.supported_vm_types;
-		printk("XXX: kvm_caps.supported_vm_types = %x\n\n", r);
 		break;
 	case KVM_CAP_READONLY_MEM:
 		r = kvm ? kvm_arch_has_readonly_mem(kvm) : 1;
@@ -5848,31 +5844,6 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 	}
 }
 
-void kvm_arch_vcpu_pre_memory_mapping(struct kvm_vcpu *vcpu)
-{
-	kvm_mmu_reload(vcpu);
-}
-
-int kvm_arch_vcpu_memory_mapping(struct kvm_vcpu *vcpu,
-				 struct kvm_memory_mapping *mapping)
-{
-	u8 max_level = KVM_MAX_HUGEPAGE_LEVEL;
-	u64 error_code = PFERR_WRITE_MASK;
-	u8 goal_level = PG_LEVEL_4K;
-	int r;
-
-	r = kvm_mmu_map_tdp_page(vcpu, gfn_to_gpa(mapping->base_gfn), error_code,
-				 max_level, &goal_level);
-	if (r)
-		return r;
-
-	if (mapping->source)
-		mapping->source += KVM_HPAGE_SIZE(goal_level);
-	mapping->base_gfn += KVM_PAGES_PER_HPAGE(goal_level);
-	mapping->nr_pages -= KVM_PAGES_PER_HPAGE(goal_level);
-	return r;
-}
-
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg)
 {
@@ -6763,8 +6734,6 @@ split_irqchip_unlock:
 		break;
 	default:
 		r = -EINVAL;
-		if (kvm_x86_ops.vm_enable_cap)
-			r = static_call(kvm_x86_vm_enable_cap)(kvm, cap);
 		break;
 	}
 	return r;
@@ -7306,6 +7275,10 @@ set_pit2_out:
 		goto out;
 	}
 	case KVM_MEMORY_ENCRYPT_OP: {
+		r = -ENOTTY;
+		if (!kvm_x86_ops.mem_enc_ioctl)
+			goto out;
+
 		r = kvm_x86_call(mem_enc_ioctl)(kvm, argp);
 		break;
 	}
@@ -12650,11 +12623,6 @@ void kvm_arch_disable_virtualization_cpu(void)
 	drop_user_return_notifiers();
 }
 
-int kvm_arch_offline_cpu(unsigned int cpu)
-{
-	return static_call(kvm_x86_offline_cpu)();
-}
-
 bool kvm_vcpu_is_reset_bsp(struct kvm_vcpu *vcpu)
 {
 	return vcpu->kvm->arch.bsp_vcpu_id == vcpu->vcpu_id;
@@ -12881,7 +12849,6 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 	kvm_page_track_cleanup(kvm);
 	kvm_xen_destroy_vm(kvm);
 	kvm_hv_destroy_vm(kvm);
-	static_call_cond(kvm_x86_vm_free)(kvm);
 }
 
 static void memslot_rmap_free(struct kvm_memory_slot *slot)

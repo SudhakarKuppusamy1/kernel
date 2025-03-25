@@ -40,14 +40,9 @@
 #include <asm/mce.h>
 #include "tdx.h"
 
-u32 tdx_global_keyid __ro_after_init;
-EXPORT_SYMBOL_GPL(tdx_global_keyid);
-
-u32 tdx_guest_keyid_start __ro_after_init;
-EXPORT_SYMBOL_GPL(tdx_guest_keyid_start);
-
-u32 tdx_nr_guest_keyids __ro_after_init;
-EXPORT_SYMBOL_GPL(tdx_nr_guest_keyids);
+static u32 tdx_global_keyid __ro_after_init;
+static u32 tdx_guest_keyid_start __ro_after_init;
+static u32 tdx_nr_guest_keyids __ro_after_init;
 
 static DEFINE_PER_CPU(bool, tdx_lp_initialized);
 
@@ -257,7 +252,7 @@ err:
 	return ret;
 }
 
-int tdx_sys_metadata_field_read(u64 field_id, u64 *data)
+static int read_sys_metadata_field(u64 field_id, u64 *data)
 {
 	struct tdx_module_args args = {};
 	int ret;
@@ -276,75 +271,61 @@ int tdx_sys_metadata_field_read(u64 field_id, u64 *data)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(tdx_sys_metadata_field_read);
 
-/* Return the metadata field element size in bytes */
-static int get_metadata_field_bytes(u64 field_id)
+static int read_sys_metadata_field16(u64 field_id,
+				     int offset,
+				     struct tdx_tdmr_sysinfo *ts)
 {
-	/*
-	 * TDX supports 8/16/32/64 bits metadata field element sizes.
-	 * TDX module determines the metadata element size based on the
-	 * "element size code" encoded in the field ID (see the comment
-	 * of MD_FIELD_ID_ELE_SIZE_CODE macro for specific encodings).
-	 */
-	return 1 << MD_FIELD_ID_ELE_SIZE_CODE(field_id);
-}
-
-static int stbuf_read_sys_metadata_field(u64 field_id,
-					 int offset,
-					 int bytes,
-					 void *stbuf)
-{
-	void *st_member = stbuf + offset;
+	u16 *ts_member = ((void *)ts) + offset;
 	u64 tmp;
 	int ret;
 
-	if (WARN_ON_ONCE(get_metadata_field_bytes(field_id) != bytes))
+	if (WARN_ON_ONCE(MD_FIELD_ID_ELE_SIZE_CODE(field_id) !=
+			MD_FIELD_ID_ELE_SIZE_16BIT))
 		return -EINVAL;
 
-	ret = tdx_sys_metadata_field_read(field_id, &tmp);
+	ret = read_sys_metadata_field(field_id, &tmp);
 	if (ret)
 		return ret;
 
-	memcpy(st_member, &tmp, bytes);
+	*ts_member = tmp;
 
 	return 0;
 }
 
-int tdx_sys_metadata_read(const struct tdx_metadata_field_mapping *fields,
-			  int nr_fields, void *stbuf)
-{
-	int i, ret;
+struct field_mapping {
+	u64 field_id;
+	int offset;
+};
 
-	for (i = 0; i < nr_fields; i++) {
-		ret = stbuf_read_sys_metadata_field(fields[i].field_id,
-				      fields[i].offset,
-				      fields[i].size,
-				      stbuf);
+#define TD_SYSINFO_MAP(_field_id, _offset) \
+	{ .field_id = MD_FIELD_ID_##_field_id,	   \
+	  .offset   = offsetof(struct tdx_tdmr_sysinfo, _offset) }
+
+/* Map TD_SYSINFO fields into 'struct tdx_tdmr_sysinfo': */
+static const struct field_mapping fields[] = {
+	TD_SYSINFO_MAP(MAX_TDMRS,	      max_tdmrs),
+	TD_SYSINFO_MAP(MAX_RESERVED_PER_TDMR, max_reserved_per_tdmr),
+	TD_SYSINFO_MAP(PAMT_4K_ENTRY_SIZE,    pamt_entry_size[TDX_PS_4K]),
+	TD_SYSINFO_MAP(PAMT_2M_ENTRY_SIZE,    pamt_entry_size[TDX_PS_2M]),
+	TD_SYSINFO_MAP(PAMT_1G_ENTRY_SIZE,    pamt_entry_size[TDX_PS_1G]),
+};
+
+static int get_tdx_tdmr_sysinfo(struct tdx_tdmr_sysinfo *tdmr_sysinfo)
+{
+	int ret;
+	int i;
+
+	/* Populate 'tdmr_sysinfo' fields using the mapping structure above: */
+	for (i = 0; i < ARRAY_SIZE(fields); i++) {
+		ret = read_sys_metadata_field16(fields[i].field_id,
+						fields[i].offset,
+						tdmr_sysinfo);
 		if (ret)
 			return ret;
 	}
 
 	return 0;
-}
-EXPORT_SYMBOL_GPL(tdx_sys_metadata_read);
-
-#define TD_SYSINFO_MAP_TDMR_INFO(_field_id, _member)	\
-	TD_SYSINFO_MAP(_field_id, struct tdx_tdmr_sysinfo, _member)
-
-static int get_tdx_tdmr_sysinfo(struct tdx_tdmr_sysinfo *tdmr_sysinfo)
-{
-	/* Map TD_SYSINFO fields into 'struct tdx_tdmr_sysinfo': */
-	const struct tdx_metadata_field_mapping fields[] = {
-		TD_SYSINFO_MAP_TDMR_INFO(MAX_TDMRS,		max_tdmrs),
-		TD_SYSINFO_MAP_TDMR_INFO(MAX_RESERVED_PER_TDMR, max_reserved_per_tdmr),
-		TD_SYSINFO_MAP_TDMR_INFO(PAMT_4K_ENTRY_SIZE,    pamt_entry_size[TDX_PS_4K]),
-		TD_SYSINFO_MAP_TDMR_INFO(PAMT_2M_ENTRY_SIZE,    pamt_entry_size[TDX_PS_2M]),
-		TD_SYSINFO_MAP_TDMR_INFO(PAMT_1G_ENTRY_SIZE,    pamt_entry_size[TDX_PS_1G]),
-	};
-
-	/* Populate 'tdmr_sysinfo' fields using the mapping structure above: */
-	return tdx_sys_metadata_read(fields, ARRAY_SIZE(fields), tdmr_sysinfo);
 }
 
 /* Calculate the actual TDMR size */

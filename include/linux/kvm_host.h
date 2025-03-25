@@ -1536,7 +1536,6 @@ static inline void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu) {}
 int kvm_arch_enable_virtualization_cpu(void);
 void kvm_arch_disable_virtualization_cpu(void);
 #endif
-int kvm_arch_offline_cpu(unsigned int cpu);
 int kvm_arch_vcpu_runnable(struct kvm_vcpu *vcpu);
 bool kvm_arch_vcpu_in_kernel(struct kvm_vcpu *vcpu);
 int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu);
@@ -2478,9 +2477,5 @@ void kvm_arch_gmem_invalidate(kvm_pfn_t start, kvm_pfn_t end);
 long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
 				    struct kvm_pre_fault_memory *range);
 #endif
-
-void kvm_arch_vcpu_pre_memory_mapping(struct kvm_vcpu *vcpu);
-int kvm_arch_vcpu_memory_mapping(struct kvm_vcpu *vcpu,
-				 struct kvm_memory_mapping *mapping);
 
 #endif

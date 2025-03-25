@@ -6,98 +6,6 @@
 #include "nested.h"
 #include "pmu.h"
 #include "posted_intr.h"
-#include "tdx.h"
-#include "tdx_arch.h"
-
-static bool enable_tdx __ro_after_init;
-module_param_named(tdx, enable_tdx, bool, 0444);
-
-
-#if 0
-static bool vt_is_vm_type_supported(unsigned long type)
-{
-	return __kvm_is_vm_type_supported(type) ||
-		(enable_tdx && tdx_is_vm_type_supported(type));
-}
-#endif
-
-static int vt_max_vcpus(struct kvm *kvm)
-{
-	if (!kvm)
-		return KVM_MAX_VCPUS;
-
-	if (is_td(kvm))
-		return min(kvm->max_vcpus, TDX_MAX_VCPUS);
-
-	return kvm->max_vcpus;
-}
-
-static __init int vt_hardware_setup(void)
-{
-	int ret;
-
-	ret = vmx_hardware_setup();
-	if (ret)
-		return ret;
-
-	enable_tdx = enable_tdx && !tdx_hardware_setup(&vt_x86_ops);
-	if (enable_tdx)
-		vt_x86_ops.vm_size = max_t(unsigned int, vt_x86_ops.vm_size,
-					   sizeof(struct kvm_tdx));
-
-	return 0;
-}
-
-static void vt_hardware_unsetup(void)
-{
-	if (enable_tdx)
-		tdx_hardware_unsetup();
-	vmx_hardware_unsetup();
-}
-
-static int vt_vm_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
-{
-	if (is_td(kvm))
-		return tdx_vm_enable_cap(kvm, cap);
-
-	return -EINVAL;
-}
-
-static int vt_vm_init(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		return tdx_vm_init(kvm);
-
-	return vmx_vm_init(kvm);
-}
-
-static void vt_flush_shadow_all_private(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		tdx_mmu_release_hkid(kvm);
-}
-
-static void vt_vm_destroy(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		return;
-
-	vmx_vm_destroy(kvm);
-}
-
-static void vt_vm_free(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		tdx_vm_free(kvm);
-}
-
-static int vt_mem_enc_ioctl(struct kvm *kvm, void __user *argp)
-{
-	if (!is_td(kvm))
-		return -ENOTTY;
-
-	return tdx_vm_ioctl(kvm, argp);
-}
 
 #define VMX_REQUIRED_APICV_INHIBITS				\
 	(BIT(APICV_INHIBIT_REASON_DISABLED) |			\
@@ -113,10 +21,8 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 
 	.check_processor_compatibility = vmx_check_processor_compat,
 
-	.hardware_unsetup = vt_hardware_unsetup,
-	.offline_cpu = tdx_offline_cpu,
+	.hardware_unsetup = vmx_hardware_unsetup,
 
-	/* TDX cpu enablement is done by tdx_hardware_setup(). */
 	.enable_virtualization_cpu = vmx_enable_virtualization_cpu,
 	.disable_virtualization_cpu = vmx_disable_virtualization_cpu,
 	.emergency_disable_virtualization_cpu = vmx_emergency_disable_virtualization_cpu,
@@ -124,12 +30,8 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.has_emulated_msr = vmx_has_emulated_msr,
 
 	.vm_size = sizeof(struct kvm_vmx),
-	.max_vcpus = vt_max_vcpus,
-	.vm_enable_cap = vt_vm_enable_cap,
-	.vm_init = vt_vm_init,
-	.flush_shadow_all_private = vt_flush_shadow_all_private,
-	.vm_destroy = vt_vm_destroy,
-	.vm_free = vt_vm_free,
+	.vm_init = vmx_vm_init,
+	.vm_destroy = vmx_vm_destroy,
 
 	.vcpu_precreate = vmx_vcpu_precreate,
 	.vcpu_create = vmx_vcpu_create,
@@ -255,78 +157,12 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
 
 	.get_untagged_addr = vmx_get_untagged_addr,
-
-	.mem_enc_ioctl = vt_mem_enc_ioctl,
 };
 
 struct kvm_x86_init_ops vt_init_ops __initdata = {
-	.hardware_setup = vt_hardware_setup,
+	.hardware_setup = vmx_hardware_setup,
 	.handle_intel_pt_intr = NULL,
 
 	.runtime_ops = &vt_x86_ops,
 	.pmu_ops = &intel_pmu_ops,
 };
-
-static int __init vt_init(void)
-{
-	unsigned int vcpu_size, vcpu_align;
-	int cpu, r;
-
-	if (!kvm_is_vmx_supported())
-		return -EOPNOTSUPP;
-
-	/*
-	 * Note, hv_init_evmcs() touches only VMX knobs, i.e. there's nothing
-	 * to unwind if a later step fails.
-	 */
-	hv_init_evmcs();
-
-	/* vmx_hardware_disable() accesses loaded_vmcss_on_cpu. */
-	for_each_possible_cpu(cpu)
-		INIT_LIST_HEAD(&per_cpu(loaded_vmcss_on_cpu, cpu));
-
-	r = kvm_x86_vendor_init(&vt_init_ops);
-	if (r)
-		return r;
-
-	r = vmx_init();
-	if (r)
-		goto err_vmx_init;
-
-	/*
-	 * Common KVM initialization _must_ come last, after this, /dev/kvm is
-	 * exposed to userspace!
-	 */
-	/*
-	 * kvm_x86_ops is updated with vt_x86_ops.  vt_x86_ops.vm_size must
-	 * be set before kvm_x86_vendor_init().
-	 */
-	vcpu_size = sizeof(struct vcpu_vmx);
-	vcpu_align = __alignof__(struct vcpu_vmx);
-	if (enable_tdx) {
-		vcpu_size = max_t(unsigned int, vcpu_size,
-				  sizeof(struct vcpu_tdx));
-		vcpu_align = max_t(unsigned int, vcpu_align,
-				   __alignof__(struct vcpu_tdx));
-	}
-	r = kvm_init(vcpu_size, vcpu_align, THIS_MODULE);
-	if (r)
-		goto err_kvm_init;
-
-	return 0;
-
-err_kvm_init:
-	vmx_exit();
-err_vmx_init:
-	kvm_x86_vendor_exit();
-	return r;
-}
-module_init(vt_init);
-
-static void vt_exit(void)
-{
-	kvm_exit();
-	kvm_x86_vendor_exit();
-	vmx_exit();
-}
-module_exit(vt_exit);
