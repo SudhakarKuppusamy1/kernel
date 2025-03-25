@@ -760,10 +760,11 @@ struct kvm_vcpu_arch {
 	u32 pkru;
 	u32 hflags;
 	u64 efer;
-	u64 host_debugctl;
 	u64 apic_base;
 	struct kvm_lapic *apic;    /* kernel irqchip context */
-	bool load_eoi_exitmap_pending;
+#ifndef __GENKSYMS__
+	u64 host_debugctl;
+#endif
 	DECLARE_BITMAP(ioapic_handled_vectors, 256);
 	unsigned long apic_attention;
 	int32_t apic_arb_prio;
@@ -774,6 +775,9 @@ struct kvm_vcpu_arch {
 	bool at_instruction_boundary;
 	bool tpr_access_reporting;
 	bool xfd_no_write_intercept;
+#ifndef __GENKSYMS__
+	bool load_eoi_exitmap_pending;
+#endif
 	u64 ia32_xss;
 	u64 microcode_version;
 	u64 arch_capabilities;
