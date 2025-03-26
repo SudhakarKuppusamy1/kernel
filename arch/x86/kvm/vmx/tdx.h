@@ -1,33 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef __KVM_X86_TDX_H
-#define __KVM_X86_TDX_H
+#ifndef __KVM_X86_VMX_TDX_H
+#define __KVM_X86_VMX_TDX_H
 
-#ifdef CONFIG_INTEL_TDX_HOST
+#include "tdx_arch.h"
+#include "tdx_errno.h"
 
-#include "pmu_intel.h"
-#include "tdx_ops.h"
+#ifdef CONFIG_KVM_INTEL_TDX
+int tdx_bringup(void);
+void tdx_cleanup(void);
+
+extern bool enable_tdx;
 
 struct kvm_tdx {
 	struct kvm kvm;
-
-	unsigned long tdr_pa;
-	unsigned long *tdcs_pa;
-
-	u64 attributes;
-	u64 xfam;
-	int hkid;
-
-	u64 tsc_offset;
+	/* TDX specific members follow. */
 };
 
 struct vcpu_tdx {
 	struct kvm_vcpu	vcpu;
-
-	/*
-	 * Dummy to make pmu_intel not corrupt memory.
-	 * TODO: Support PMU for TDX.  Future work.
-	 */
-	struct lbr_desc lbr_desc;
+	/* TDX specific members follow. */
 };
 
 static inline bool is_td(struct kvm *kvm)
@@ -40,30 +31,12 @@ static inline bool is_td_vcpu(struct kvm_vcpu *vcpu)
 	return is_td(vcpu->kvm);
 }
 
-static inline struct kvm_tdx *to_kvm_tdx(struct kvm *kvm)
-{
-	return container_of(kvm, struct kvm_tdx, kvm);
-}
-
-static inline struct vcpu_tdx *to_tdx(struct kvm_vcpu *vcpu)
-{
-	return container_of(vcpu, struct vcpu_tdx, vcpu);
-}
-
-static __always_inline u64 td_tdcs_exec_read64(struct kvm_tdx *kvm_tdx, u32 field)
-{
-	struct tdx_module_args out;
-	u64 err;
-
-	err = tdh_mng_rd(kvm_tdx->tdr_pa, TDCS_EXEC(field), &out);
-	if (unlikely(err)) {
-		pr_err("TDH_MNG_RD[EXEC.0x%x] failed: 0x%llx\n", field, err);
-		return 0;
-	}
-	return out.r8;
-}
-
 #else
+static inline int tdx_bringup(void) { return 0; }
+static inline void tdx_cleanup(void) {}
+
+#define enable_tdx	0
+
 struct kvm_tdx {
 	struct kvm kvm;
 };
@@ -74,8 +47,7 @@ struct vcpu_tdx {
 
 static inline bool is_td(struct kvm *kvm) { return false; }
 static inline bool is_td_vcpu(struct kvm_vcpu *vcpu) { return false; }
-static inline struct kvm_tdx *to_kvm_tdx(struct kvm *kvm) { return NULL; }
-static inline struct vcpu_tdx *to_tdx(struct kvm_vcpu *vcpu) { return NULL; }
-#endif /* CONFIG_INTEL_TDX_HOST */
 
-#endif /* __KVM_X86_TDX_H */
+#endif
+
+#endif

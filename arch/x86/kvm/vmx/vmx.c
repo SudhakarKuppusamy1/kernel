@@ -495,7 +495,7 @@ DEFINE_PER_CPU(struct vmcs *, current_vmcs);
  * We maintain a per-CPU linked-list of VMCS loaded on that CPU. This is needed
  * when a CPU is brought down, and we need to VMCLEAR all VMCSs loaded on it.
  */
-DEFINE_PER_CPU(struct list_head, loaded_vmcss_on_cpu);
+static DEFINE_PER_CPU(struct list_head, loaded_vmcss_on_cpu);
 
 static DECLARE_BITMAP(vmx_vpid_bitmap, VMX_NR_VPIDS);
 static DEFINE_SPINLOCK(vmx_vpid_lock);
@@ -551,7 +551,7 @@ static int hv_enable_l2_tlb_flush(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
-__init void hv_init_evmcs(void)
+static __init void hv_init_evmcs(void)
 {
 	int cpu;
 
@@ -587,7 +587,7 @@ __init void hv_init_evmcs(void)
 	}
 }
 
-void hv_reset_evmcs(void)
+static void hv_reset_evmcs(void)
 {
 	struct hv_vp_assist_page *vp_ap;
 
@@ -611,6 +611,10 @@ void hv_reset_evmcs(void)
 	vp_ap->current_nested_vmcs = 0;
 	vp_ap->enlighten_vmentry = 0;
 }
+
+#else /* IS_ENABLED(CONFIG_HYPERV) */
+static void hv_init_evmcs(void) {}
+static void hv_reset_evmcs(void) {}
 #endif /* IS_ENABLED(CONFIG_HYPERV) */
 
 /*
@@ -1511,16 +1515,12 @@ void vmx_vcpu_load_vmcs(struct kvm_vcpu *vcpu, int cpu,
  */
 void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
-	struct vcpu_vmx *vmx = to_vmx(vcpu);
-
 	if (vcpu->scheduled_out && !kvm_pause_in_guest(vcpu->kvm))
 		shrink_ple_window(vcpu);
 
 	vmx_vcpu_load_vmcs(vcpu, cpu, NULL);
 
 	vmx_vcpu_pi_load(vcpu, cpu);
-
-	vmx->host_debugctlmsr = get_debugctlmsr();
 }
 
 void vmx_vcpu_put(struct kvm_vcpu *vcpu)
@@ -2786,7 +2786,7 @@ static bool __kvm_is_vmx_supported(void)
 	return true;
 }
 
-bool kvm_is_vmx_supported(void)
+static bool kvm_is_vmx_supported(void)
 {
 	bool supported;
 
@@ -7436,8 +7436,8 @@ fastpath_t vmx_vcpu_run(struct kvm_vcpu *vcpu, bool force_immediate_exit)
 	}
 
 	/* MSR_IA32_DEBUGCTLMSR is zeroed on vmexit. Restore it if needed */
-	if (vmx->host_debugctlmsr)
-		update_debugctlmsr(vmx->host_debugctlmsr);
+	if (vcpu->arch.host_debugctl)
+		update_debugctlmsr(vcpu->arch.host_debugctl);
 
 #ifndef CONFIG_X86_64
 	/*
@@ -8589,11 +8589,26 @@ void vmx_exit(void)
 	allow_smaller_maxphyaddr = false;
 
 	vmx_cleanup_l1d_flush();
+
+	kvm_x86_vendor_exit();
 }
 
 int __init vmx_init(void)
 {
 	int r, cpu;
+
+	if (!kvm_is_vmx_supported())
+		return -EOPNOTSUPP;
+
+	/*
+	 * Note, hv_init_evmcs() touches only VMX knobs, i.e. there's nothing
+	 * to unwind if a later step fails.
+	 */
+	hv_init_evmcs();
+
+	r = kvm_x86_vendor_init(&vt_init_ops);
+	if (r)
+		return r;
 
 	/*
 	 * Must be called after common x86 init so enable_ept is properly set
@@ -8604,10 +8619,13 @@ int __init vmx_init(void)
 	 */
 	r = vmx_setup_l1d_flush(vmentry_l1d_flush_param);
 	if (r)
-		return r;
+		goto err_l1d_flush;
 
-	for_each_possible_cpu(cpu)
+	for_each_possible_cpu(cpu) {
+		INIT_LIST_HEAD(&per_cpu(loaded_vmcss_on_cpu, cpu));
+
 		pi_init_cpu(cpu);
+	}
 
 	vmx_check_vmcs12_offsets();
 
@@ -8620,4 +8638,8 @@ int __init vmx_init(void)
 		allow_smaller_maxphyaddr = true;
 
 	return 0;
+
+err_l1d_flush:
+	kvm_x86_vendor_exit();
+	return r;
 }

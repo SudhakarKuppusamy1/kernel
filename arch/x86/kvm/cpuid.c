@@ -1398,7 +1398,7 @@ static inline int __do_cpuid_func(struct kvm_cpuid_array *array, u32 function)
 
 		entry->ecx = entry->edx = 0;
 		if (!enable_pmu || !kvm_cpu_cap_has(X86_FEATURE_PERFMON_V2)) {
-			entry->eax = entry->ebx;
+			entry->eax = entry->ebx = 0;
 			break;
 		}
 
@@ -1544,13 +1544,6 @@ out_free:
 	kvfree(array.entries);
 	return r;
 }
-
-struct kvm_cpuid_entry2 *kvm_find_cpuid_entry2(
-	struct kvm_cpuid_entry2 *entries, int nent, u32 function, u64 index)
-{
-	return cpuid_entry2_find(entries, nent, function, index);
-}
-EXPORT_SYMBOL_GPL(kvm_find_cpuid_entry2);
 
 struct kvm_cpuid_entry2 *kvm_find_cpuid_entry_index(struct kvm_vcpu *vcpu,
 						    u32 function, u32 index)

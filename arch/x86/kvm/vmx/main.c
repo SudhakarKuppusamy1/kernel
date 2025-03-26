@@ -7,30 +7,6 @@
 #include "pmu.h"
 #include "posted_intr.h"
 #include "tdx.h"
-#include "tdx_arch.h"
-
-static bool enable_tdx __ro_after_init;
-module_param_named(tdx, enable_tdx, bool, 0444);
-
-
-#if 0
-static bool vt_is_vm_type_supported(unsigned long type)
-{
-	return __kvm_is_vm_type_supported(type) ||
-		(enable_tdx && tdx_is_vm_type_supported(type));
-}
-#endif
-
-static int vt_max_vcpus(struct kvm *kvm)
-{
-	if (!kvm)
-		return KVM_MAX_VCPUS;
-
-	if (is_td(kvm))
-		return min(kvm->max_vcpus, TDX_MAX_VCPUS);
-
-	return kvm->max_vcpus;
-}
 
 static __init int vt_hardware_setup(void)
 {
@@ -40,55 +16,29 @@ static __init int vt_hardware_setup(void)
 	if (ret)
 		return ret;
 
-	enable_tdx = enable_tdx && !tdx_hardware_setup(&vt_x86_ops);
+	/*
+	 * Update vt_x86_ops::vm_size here so it is ready before
+	 * kvm_ops_update() is called in kvm_x86_vendor_init().
+	 *
+	 * Note, the actual bringing up of TDX must be done after
+	 * kvm_ops_update() because enabling TDX requires enabling
+	 * hardware virtualization first, i.e., all online CPUs must
+	 * be in post-VMXON state.  This means the @vm_size here
+	 * may be updated to TDX's size but TDX may fail to enable
+	 * at later time.
+	 *
+	 * The VMX/VT code could update kvm_x86_ops::vm_size again
+	 * after bringing up TDX, but this would require exporting
+	 * either kvm_x86_ops or kvm_ops_update() from the base KVM
+	 * module, which looks overkill.  Anyway, the worst case here
+	 * is KVM may allocate couple of more bytes than needed for
+	 * each VM.
+	 */
 	if (enable_tdx)
 		vt_x86_ops.vm_size = max_t(unsigned int, vt_x86_ops.vm_size,
-					   sizeof(struct kvm_tdx));
+				sizeof(struct kvm_tdx));
 
 	return 0;
-}
-
-static void vt_hardware_unsetup(void)
-{
-	if (enable_tdx)
-		tdx_hardware_unsetup();
-	vmx_hardware_unsetup();
-}
-
-static int vt_vm_enable_cap(struct kvm *kvm, struct kvm_enable_cap *cap)
-{
-	if (is_td(kvm))
-		return tdx_vm_enable_cap(kvm, cap);
-
-	return -EINVAL;
-}
-
-static int vt_vm_init(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		return tdx_vm_init(kvm);
-
-	return vmx_vm_init(kvm);
-}
-
-static void vt_flush_shadow_all_private(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		tdx_mmu_release_hkid(kvm);
-}
-
-static void vt_vm_destroy(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		return;
-
-	vmx_vm_destroy(kvm);
-}
-
-static void vt_vm_free(struct kvm *kvm)
-{
-	if (is_td(kvm))
-		tdx_vm_free(kvm);
 }
 
 static int vt_mem_enc_ioctl(struct kvm *kvm, void __user *argp)
@@ -113,10 +63,8 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 
 	.check_processor_compatibility = vmx_check_processor_compat,
 
-	.hardware_unsetup = vt_hardware_unsetup,
-	.offline_cpu = tdx_offline_cpu,
+	.hardware_unsetup = vmx_hardware_unsetup,
 
-	/* TDX cpu enablement is done by tdx_hardware_setup(). */
 	.enable_virtualization_cpu = vmx_enable_virtualization_cpu,
 	.disable_virtualization_cpu = vmx_disable_virtualization_cpu,
 	.emergency_disable_virtualization_cpu = vmx_emergency_disable_virtualization_cpu,
@@ -124,12 +72,8 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 	.has_emulated_msr = vmx_has_emulated_msr,
 
 	.vm_size = sizeof(struct kvm_vmx),
-	.max_vcpus = vt_max_vcpus,
-	.vm_enable_cap = vt_vm_enable_cap,
-	.vm_init = vt_vm_init,
-	.flush_shadow_all_private = vt_flush_shadow_all_private,
-	.vm_destroy = vt_vm_destroy,
-	.vm_free = vt_vm_free,
+	.vm_init = vmx_vm_init,
+	.vm_destroy = vmx_vm_destroy,
 
 	.vcpu_precreate = vmx_vcpu_precreate,
 	.vcpu_create = vmx_vcpu_create,
@@ -267,48 +211,46 @@ struct kvm_x86_init_ops vt_init_ops __initdata = {
 	.pmu_ops = &intel_pmu_ops,
 };
 
+static void __exit vt_exit(void)
+{
+	kvm_exit();
+	tdx_cleanup();
+	vmx_exit();
+}
+module_exit(vt_exit);
+
 static int __init vt_init(void)
 {
-	unsigned int vcpu_size, vcpu_align;
-	int cpu, r;
-
-	if (!kvm_is_vmx_supported())
-		return -EOPNOTSUPP;
-
-	/*
-	 * Note, hv_init_evmcs() touches only VMX knobs, i.e. there's nothing
-	 * to unwind if a later step fails.
-	 */
-	hv_init_evmcs();
-
-	/* vmx_hardware_disable() accesses loaded_vmcss_on_cpu. */
-	for_each_possible_cpu(cpu)
-		INIT_LIST_HEAD(&per_cpu(loaded_vmcss_on_cpu, cpu));
-
-	r = kvm_x86_vendor_init(&vt_init_ops);
-	if (r)
-		return r;
+	unsigned vcpu_size, vcpu_align;
+	int r;
 
 	r = vmx_init();
 	if (r)
-		goto err_vmx_init;
+		return r;
+
+	/* tdx_init() has been taken */
+	r = tdx_bringup();
+	if (r)
+		goto err_tdx_bringup;
+
+	/*
+	 * TDX and VMX have different vCPU structures.  Calculate the
+	 * maximum size/align so that kvm_init() can use the larger
+	 * values to create the kmem_vcpu_cache.
+	 */
+	vcpu_size = sizeof(struct vcpu_vmx);
+	vcpu_align = __alignof__(struct vcpu_vmx);
+	if (enable_tdx) {
+		vcpu_size = max_t(unsigned, vcpu_size,
+				sizeof(struct vcpu_tdx));
+		vcpu_align = max_t(unsigned, vcpu_align,
+				__alignof__(struct vcpu_tdx));
+	}
 
 	/*
 	 * Common KVM initialization _must_ come last, after this, /dev/kvm is
 	 * exposed to userspace!
 	 */
-	/*
-	 * kvm_x86_ops is updated with vt_x86_ops.  vt_x86_ops.vm_size must
-	 * be set before kvm_x86_vendor_init().
-	 */
-	vcpu_size = sizeof(struct vcpu_vmx);
-	vcpu_align = __alignof__(struct vcpu_vmx);
-	if (enable_tdx) {
-		vcpu_size = max_t(unsigned int, vcpu_size,
-				  sizeof(struct vcpu_tdx));
-		vcpu_align = max_t(unsigned int, vcpu_align,
-				   __alignof__(struct vcpu_tdx));
-	}
 	r = kvm_init(vcpu_size, vcpu_align, THIS_MODULE);
 	if (r)
 		goto err_kvm_init;
@@ -316,17 +258,9 @@ static int __init vt_init(void)
 	return 0;
 
 err_kvm_init:
+	tdx_cleanup();
+err_tdx_bringup:
 	vmx_exit();
-err_vmx_init:
-	kvm_x86_vendor_exit();
 	return r;
 }
 module_init(vt_init);
-
-static void vt_exit(void)
-{
-	kvm_exit();
-	kvm_x86_vendor_exit();
-	vmx_exit();
-}
-module_exit(vt_exit);

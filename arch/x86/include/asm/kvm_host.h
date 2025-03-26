@@ -762,7 +762,9 @@ struct kvm_vcpu_arch {
 	u64 efer;
 	u64 apic_base;
 	struct kvm_lapic *apic;    /* kernel irqchip context */
-	bool load_eoi_exitmap_pending;
+#ifndef __GENKSYMS__
+	u64 host_debugctl;
+#endif
 	DECLARE_BITMAP(ioapic_handled_vectors, 256);
 	unsigned long apic_attention;
 	int32_t apic_arb_prio;
@@ -773,6 +775,9 @@ struct kvm_vcpu_arch {
 	bool at_instruction_boundary;
 	bool tpr_access_reporting;
 	bool xfd_no_write_intercept;
+#ifndef __GENKSYMS__
+	bool load_eoi_exitmap_pending;
+#endif
 	u64 ia32_xss;
 	u64 microcode_version;
 	u64 arch_capabilities;
@@ -1038,6 +1043,9 @@ struct kvm_vcpu_arch {
 	 * reading the guest memory
 	 */
 	bool pdptrs_from_userspace;
+#ifndef __GENKSYMS__
+	bool guest_tsc_protected;
+#endif
 
 #if IS_ENABLED(CONFIG_HYPERV)
 	hpa_t hv_root_tdp;
@@ -1838,13 +1846,6 @@ struct kvm_x86_ops {
 	int (*gmem_prepare)(struct kvm *kvm, kvm_pfn_t pfn, gfn_t gfn, int max_order);
 	void (*gmem_invalidate)(kvm_pfn_t start, kvm_pfn_t end);
 	int (*private_max_mapping_level)(struct kvm *kvm, kvm_pfn_t pfn);
-#ifndef __GENKSYMS__
-	int (*max_vcpus)(struct kvm *kvm);
-	int (*vm_enable_cap)(struct kvm *kvm, struct kvm_enable_cap *cap);
-	void (*flush_shadow_all_private)(struct kvm *kvm);
-	void (*vm_free)(struct kvm *kvm);
-	int (*offline_cpu)(void);
-#endif
 };
 
 struct kvm_x86_nested_ops {
